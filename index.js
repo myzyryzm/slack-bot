@@ -5,14 +5,14 @@ dotenv.config()
 const { WebClient } = require('@slack/web-api')
 const web = new WebClient(process.env.BOT_TOKEN)
 
-const singleTest = true
+const singleTest = false
 let lectures = []
 let refTime = new Date(Date.now())
 let origTime = new Date(Date.now())
 // time in minutes between full unprocessed lecture updates
 const fullUpdateTime = 120
 //time in minutes between content processing api requests
-let pingTime = 1
+let pingTime = 0.5
 const c = [0, -1, -2]
 const dateOptions = { month: 'numeric', day: 'numeric' }
 axios.defaults.baseURL = 'http://localhost:8000'
@@ -38,6 +38,10 @@ const postToSlack = async (lecture, lectureUpdate = false) => {
                     : s === -1
                     ? 'ERROR :octagonal_sign:'
                     : 'IN PROGRESS :first_quarter_moon:'
+            const daysOld =
+                lecture.daysOld < 2
+                    ? ''
+                    : `\n*Days Old:* ${lecture.daysOld}:exclamation:`
             const assignee =
                 lecture.assignee.length > 0
                     ? `\n*Assignee:* ${lecture.assignee}`
@@ -50,7 +54,14 @@ const postToSlack = async (lecture, lectureUpdate = false) => {
                 lecture.notesVisibility === 'HIDDEN'
                     ? `\n<${lecture.keyframesLink}|Download Notes Here>\n`
                     : '\n'
-            sentence = lec + stage + assignee + comments + notesDownload + sep
+            sentence =
+                lec +
+                stage +
+                daysOld +
+                assignee +
+                comments +
+                notesDownload +
+                sep
         }
     } else {
         const now = new Date(Date.now())
@@ -61,7 +72,7 @@ const postToSlack = async (lecture, lectureUpdate = false) => {
             minute: 'numeric'
         }).format(now)
         sentence = !lectureUpdate
-            ? `:bangbang:*Unprocessed Lectures Overview ${nString}*:bangbang:`
+            ? `:bangbang:*Lectures to Check Out ${nString}*:bangbang:`
             : `:exclamation:*Lecture Update ${nString}*:exclamation:`
     }
     let blocks = [
@@ -85,6 +96,7 @@ const postToSlack = async (lecture, lectureUpdate = false) => {
 }
 
 const getContent = (univ_id, semester_id, fullUpdate) => {
+    const now = new Date(Date.now())
     axios
         .get(process.env.ENDPOINT + `${univ_id},${semester_id}/`)
         .then(async res => {
@@ -121,11 +133,15 @@ const getContent = (univ_id, semester_id, fullUpdate) => {
                 ) {
                     t_vis = 'UNAVAILABLE AND VISIBLE'
                 }
+                const lectureDate = new Date(lecture.date)
+                const daysOld = Math.floor(
+                    (now - lectureDate) / (1000 * 60 * 60 * 24)
+                )
                 return {
                     name: lecture.course__nameshort,
                     nameid: lecture.nameid,
                     nameFull: lecture.course__nameshort + '/' + lecture.nameid,
-                    date: new Date(lecture.date).toLocaleDateString(
+                    date: lectureDate.toLocaleDateString(
                         undefined,
                         dateOptions
                     ),
@@ -139,12 +155,18 @@ const getContent = (univ_id, semester_id, fullUpdate) => {
                     notesVisibility: n_vis,
                     transcriptVisibility: t_vis,
                     keyframesLink: lecture.FEkeyframes_dl,
-                    link: lecture.short_url
+                    link: lecture.short_url,
+                    daysOld: daysOld
                 }
             })
-            const remainingLectures = lectures.filter(lecture =>
-                c.includes(lecture.stage)
-            )
+            const remainingLectures = lectures.filter(lecture => {
+                if (lecture.stage === -1) {
+                    return true
+                } else if (c.includes(lecture.stage) && lecture.daysOld >= 2) {
+                    return true
+                }
+                return false
+            })
             if (fullUpdate) {
                 await postToSlack(null)
                 if (singleTest) {
@@ -158,10 +180,17 @@ const getContent = (univ_id, semester_id, fullUpdate) => {
                         l => l.nameFull === lec.nameFull
                     )
                     if (oldLec) {
-                        return oldLec.stage !== lec.stage
-                    } else {
-                        return true
+                        if (oldLec.stage != 1 && lec.stage === 1) {
+                            return true
+                        } else if (oldLec.stage != -1 && lec.stage === -1) {
+                            return true
+                        }
+                        // return oldLec.stage !== lec.stage
                     }
+                    return false
+                    // else {
+                    //     return true
+                    // }
                 })
                 if (nuLecs.length > 0) {
                     await postToSlack(null, true)
